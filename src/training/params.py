@@ -19,6 +19,12 @@ def parse_args():
         help="Path to csv filewith training data",
     )
     parser.add_argument(
+        "--msn-path",
+        type=str,
+        default=None,
+        help="Path to msn directory",
+    )    
+    parser.add_argument(
         "--val-data",
         type=str,
         default=None,
@@ -38,7 +44,7 @@ def parse_args():
     )
     parser.add_argument(
         "--dataset-type",
-        choices=["webdataset", "csv", "auto"],
+        choices=["webdataset", "csv", "csv_msn" "auto"],
         default="auto",
         help="Which type of dataset to process."
     )

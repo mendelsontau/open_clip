@@ -31,6 +31,9 @@ from training.params import parse_args
 from training.scheduler import cosine_lr
 from training.train import train_one_epoch, evaluate
 
+from srt.srt import data as msn_data
+import yaml
+
 
 def random_seed(seed=42, rank=0):
     torch.manual_seed(seed + rank)
@@ -214,7 +217,7 @@ def main():
         else:
             logging.info("=> no checkpoint found at '{}'".format(args.resume))
 
-    # initialize datasets
+    # initialize CLIP datasets
     data = get_data(args, (preprocess_train, preprocess_val), epoch=start_epoch)
     assert len(data), 'At least one train or eval dataset must be specified.'
 
