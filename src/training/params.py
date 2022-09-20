@@ -44,7 +44,7 @@ def parse_args():
     )
     parser.add_argument(
         "--dataset-type",
-        choices=["webdataset", "csv", "csv_msn" "auto"],
+        choices=["webdataset", "csv", "csv-msn", "auto"],
         default="auto",
         help="Which type of dataset to process."
     )

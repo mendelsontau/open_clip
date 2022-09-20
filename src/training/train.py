@@ -44,11 +44,17 @@ def unwrap_model(model):
         return model
 
 
-def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
+def train_one_epoch(model, SRTdecoder, data, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
     device = torch.device(args.device)
     autocast = get_autocast(args.precision)
 
+    msn = False
+    if args.dataset_type == "csv-msn":
+        msn = True
+
     model.train()
+    if msn:
+        SRTdecoder.train()
     loss = ClipLoss(
         local_loss=args.local_loss,
         gather_with_grad=args.gather_with_grad,
@@ -69,16 +75,30 @@ def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_w
     for i, batch in enumerate(dataloader):
         step = num_batches_per_epoch * epoch + i
         scheduler(step)
+        if msn == False:
+            images, texts = batch
+        else:
+            images, texts, msn_images, input_camera_pos, input_rays, target_pixels, target_camera_pos, target_rays = batch
 
-        images, texts = batch
         images = images.to(device=device, non_blocking=True)
         texts = texts.to(device=device, non_blocking=True)
+        
+        if msn == True:
+            msn_images = msn_images.to(device=device, non_blocking=True).flatten(0,1)
+            input_camera_pos = input_camera_pos.to(device=device, non_blocking=True)
+            input_rays = input_rays.to(device=device, non_blocking=True)
+            target_pixels = target_pixels.to(device=device, non_blocking=True)
+            target_camera_pos = target_camera_pos.to(device=device, non_blocking=True)
+            target_rays = target_rays.to(device=device, non_blocking=True)
 
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
 
         with autocast():
             image_features, text_features, logit_scale = model(images, texts)
+            if msn == True:
+                z = model(msn_images, None, input_camera_pos, input_rays)
+                pred_pixels, extras = SRTdecoder(z, target_camera_pos, target_rays, None)
             total_loss = loss(image_features, text_features, logit_scale)
 
         if scaler is not None:

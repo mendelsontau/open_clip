@@ -17,6 +17,8 @@ from torch.utils.checkpoint import checkpoint
 from .timm_model import TimmModel
 from .utils import freeze_batch_norm_2d, to_2tuple
 
+from srt.srt.layers import RayEncoder
+
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -229,6 +231,25 @@ class ResidualAttentionBlock(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
+class SRT_parts(nn.Module):
+    def __init__(self, width, patch_size, pos_start_octave=-5):
+        super().__init__()
+        self.pos_octaves = 15
+        self.ray_octaves = 15
+        self.ray_encoder = RayEncoder(pos_octaves=self.pos_octaves, pos_start_octave=pos_start_octave,
+                                      ray_octaves=self.ray_octaves)
+        self.srt_conv = nn.Conv2d(in_channels = 6*(self.pos_octaves + self.ray_octaves), out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False) 
+
+    def forward(self, camera_pos, rays):
+
+        camera_pos = camera_pos.flatten(0, 1)
+        rays = rays.flatten(0, 1)
+        ray_enc = self.ray_encoder(camera_pos, rays)
+        x = self.srt_conv(ray_enc)
+
+
+        return x
+
 
 class Transformer(nn.Module):
     def __init__(self, width: int, layers: int, heads: int,  mlp_ratio: float = 4.0, act_layer: Callable = nn.GELU):
@@ -271,17 +292,24 @@ class VisualTransformer(nn.Module):
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
+        self.srtencoder = SRT_parts(width = width, patch_size=patch_size)
 
     def lock(self, unlocked_groups=0, freeze_bn_stats=False):
         assert unlocked_groups == 0, 'partial locking not currently supported for this model'
         for param in self.parameters():
             param.requires_grad = False
+    
 
     @torch.jit.ignore
     def set_grad_checkpointing(self, enable=True):
         self.transformer.grad_checkpointing = enable
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, camera_pos: torch.Tensor = None, rays: torch.Tensor = None):
+        if camera_pos != None and rays != None:
+            x_srt = self.srtencoder(camera_pos, rays)
+            x_srt = x_srt.reshape(x_srt.shape[0], x_srt.shape[1], -1)
+            x_srt = x_srt.permute(0, 2, 1)
+            x_srt = x_srt + self.positional_embedding[:-1,:].to(x_srt.dtype)
         x = self.conv1(x)  # shape = [*, width, grid, grid]
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
@@ -289,6 +317,8 @@ class VisualTransformer(nn.Module):
             [self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device),
              x], dim=1)  # shape = [*, grid ** 2 + 1, width]
         x = x + self.positional_embedding.to(x.dtype)
+        if camera_pos != None and rays != None:
+            x = torch.cat([x,x_srt],dim = 1)
         x = self.ln_pre(x)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
@@ -434,8 +464,8 @@ class CLIP(nn.Module):
         self.visual.set_grad_checkpointing(enable)
         self.transformer.grad_checkpointing = enable
 
-    def encode_image(self, image):
-        return self.visual(image)
+    def encode_image(self, image, camera_pos = None, rays = None):
+        return self.visual(image, camera_pos, rays)
 
     def encode_text(self, text):
         x = self.token_embedding(text)  # [batch_size, n_ctx, d_model]
@@ -452,12 +482,12 @@ class CLIP(nn.Module):
 
         return x
 
-    def forward(self, image, text):
+    def forward(self, image, text, camera_pos = None, rays = None):
         if image is None:
             return self.encode_text(text)
         elif text is None:
-            return self.encode_image(image)
-        image_features = self.encode_image(image)
+            return self.encode_image(image, camera_pos, rays)
+        image_features = self.encode_image(image, camera_pos, rays)
         image_features = F.normalize(image_features, dim=-1)
 
         text_features = self.encode_text(text)
@@ -541,7 +571,7 @@ def build_model_from_openai_state_dict(state_dict: dict):
         state_dict.pop(key, None)
 
     convert_weights_to_fp16(model)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict,strict = False)
     return model.eval()
 
 

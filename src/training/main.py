@@ -32,6 +32,7 @@ from training.scheduler import cosine_lr
 from training.train import train_one_epoch, evaluate
 
 from srt.srt import data as msn_data
+from srt.srt.decoder import SRTDecoder, NerfDecoder
 import yaml
 
 
@@ -121,6 +122,9 @@ def main():
         logging.info(f'Running with a single process. Device {args.device}.')
 
     random_seed(args.seed, 0)
+
+    #init CLIP model
+
     model, preprocess_train, preprocess_val = create_model_and_transforms(
         args.model,
         args.pretrained,
@@ -131,6 +135,9 @@ def main():
         pretrained_image=args.pretrained_image,
     )
     random_seed(args.seed, args.rank)
+
+    #init SRT decoder
+    SRTdecoder = SRTDecoder(pos_start_octave = -5).to(device)
 
     if args.trace:
         model = trace_model(model, batch_size=args.batch_size, device=device)
@@ -163,6 +170,7 @@ def main():
             # this doesn't exist in older PyTorch, arg only added if enabled
             ddp_args['static_graph'] = True
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args)
+        SRTdecoder = torch.nn.parallel.DistributedDataParallel(SRTdecoder, device_ids=[device], **ddp_args)
 
     # create optimizer and scaler
     optimizer = None
@@ -261,7 +269,7 @@ def main():
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
 
-        train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, writer)
+        train_one_epoch(model, SRTdecoder, data, epoch, optimizer, scaler, scheduler, args, writer)
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):

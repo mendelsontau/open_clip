@@ -49,8 +49,13 @@ class CsvDataset(Dataset):
         return len(self.captions)
 
     def __getitem__(self, idx):
-        images = self.transforms(Image.open(str(self.images[idx])))
-        texts = tokenize([str(self.captions[idx])])[0]
+        try:
+            images = self.transforms(Image.open(str(self.images[idx])))
+            texts = tokenize([str(self.captions[idx])])[0]
+        except:
+            idx += 1
+            images = self.transforms(Image.open(str(self.images[idx])))
+            texts = tokenize([str(self.captions[idx])])[0]
         return images, texts
 
 
@@ -63,6 +68,7 @@ class CsvMsnDataset(Dataset):
         self.images = df[img_key].tolist()
         self.captions = df[caption_key].tolist()
         self.transforms = transforms
+        
         self.msn_path = msn_path
         self.mode = mode
         self.msn_scenes_number = 100000
@@ -82,13 +88,23 @@ class CsvMsnDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.mode == "val":
-            images = self.transforms(Image.open(str(self.images[idx])))
-            texts = tokenize([str(self.captions[idx])])[0]
+            try:
+                images = self.transforms(Image.open(str(self.images[idx])))
+                texts = tokenize([str(self.captions[idx])])[0]
+            except:
+                idx += 1
+                images = self.transforms(Image.open(str(self.images[idx])))
+                texts = tokenize([str(self.captions[idx])])[0]
             return images, texts
         else:
             #CLIP original Data
-            images = self.transforms(Image.open(str(self.images[idx])))
-            texts = tokenize([str(self.captions[idx])])[0]
+            try:
+                images = self.transforms(Image.open(str(self.images[idx])))
+                texts = tokenize([str(self.captions[idx])])[0]
+            except:
+                idx += 1
+                images = self.transforms(Image.open(str(self.images[idx])))
+                texts = tokenize([str(self.captions[idx])])[0]
 
             #get MSN data
             msn_idx = idx % self.msn_scenes_number
@@ -124,6 +140,14 @@ class CsvMsnDataset(Dataset):
             ray_directions = torch.permute(ray_directions,(0,2,3,1))
             data['ray_directions'] = ray_directions.numpy()
 
+            #resize ray origins
+            ray_origins = data['ray_origins']
+            ray_origins = torch.from_numpy(ray_origins)
+            ray_origins = torch.permute(ray_origins,(0,3,1,2))
+            ray_origins = self.resize(ray_origins)
+            ray_origins = torch.permute(ray_origins,(0,2,3,1))
+            data['ray_origins'] = ray_origins.numpy()
+
             #get input data
             input_images = np.transpose(data['color_image'][input_views], (0, 3, 1, 2))
             input_rays = data['ray_directions'][input_views]
@@ -155,20 +179,31 @@ class CsvMsnDataset(Dataset):
 
             sceneid = int(data['scene_name'][6:])
 
-            result = {
-            'images':               images,
-            'texts':                texts, 
-            'input_images':         torch.from_numpy(input_images),         # [1, 3, h, w]
-            'input_camera_pos':     torch.from_numpy(input_camera_pos),     # [1, 3]
-            'input_rays':           torch.from_numpy(input_rays),           # [1, h, w, 3]
-            'target_pixels':        torch.from_numpy(target_pixels),        # [p, 3]
-            'target_camera_pos':    torch.from_numpy(target_camera_pos),    # [p, 3]
-            'target_rays':          torch.from_numpy(target_rays),          # [p, 3]
-            'sceneid':              torch.Tensor(sceneid),              # int
-        }
-            if self.canonical:
-                result['transform'] = torch.from_numpy(canonical_extrinsic)     # [3, 4] (optional)
-            return result
+        #    result = {
+        #    'images':               images,
+        #    'texts':                texts, 
+        #    'input_images':         torch.from_numpy(input_images),         # [1, 3, h, w]
+        #    'input_camera_pos':     torch.from_numpy(input_camera_pos),     # [1, 3]
+        #    'input_rays':           torch.from_numpy(input_rays),           # [1, h, w, 3]
+        #    'target_pixels':        torch.from_numpy(target_pixels),        # [p, 3]
+        #    'target_camera_pos':    torch.from_numpy(target_camera_pos),    # [p, 3]
+        #    'target_rays':          torch.from_numpy(target_rays),          # [p, 3]
+        #    'sceneid':              torch.Tensor(sceneid),              # int
+        #}
+            #if self.canonical:
+            #    result['transform'] = torch.from_numpy(canonical_extrinsic)     # [3, 4] (optional)
+            #return result
+            input_images = torch.from_numpy(input_images).clone()
+            input_camera_pos = torch.from_numpy(input_camera_pos).clone()
+            input_rays = torch.from_numpy(input_rays).clone()
+            target_pixels = torch.from_numpy(target_pixels).clone()
+            target_camera_pos = torch.from_numpy(target_camera_pos).clone()
+            target_rays = torch.from_numpy(target_rays).clone()
+
+
+            return images, texts, input_images, input_camera_pos,\
+                 input_rays, target_pixels, target_camera_pos, \
+                     target_rays
             
 
         
@@ -581,7 +616,7 @@ def get_dataset_fn(data_path, dataset_type):
         return get_wds_dataset
     elif dataset_type == "csv":
         return get_csv_dataset
-    elif dataset_type == "csv_msn":
+    elif dataset_type == "csv-msn":
         return get_csv_msn_dataset
     elif dataset_type == "auto":
         ext = data_path.split('.')[-1]
