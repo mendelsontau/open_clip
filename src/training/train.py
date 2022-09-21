@@ -8,6 +8,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from open_clip.loss import ClipLossPlusReconstruction, ClipLoss
+
 try:
     import wandb
 except ImportError:
@@ -48,6 +50,9 @@ def train_one_epoch(model, SRTdecoder, data, epoch, optimizer, scaler, scheduler
     device = torch.device(args.device)
     autocast = get_autocast(args.precision)
 
+    #if is_master(args):
+    #    logging.info("begin")
+
     msn = False
     if args.dataset_type == "csv-msn":
         msn = True
@@ -55,13 +60,21 @@ def train_one_epoch(model, SRTdecoder, data, epoch, optimizer, scaler, scheduler
     model.train()
     if msn:
         SRTdecoder.train()
-    loss = ClipLoss(
-        local_loss=args.local_loss,
-        gather_with_grad=args.gather_with_grad,
-        cache_labels=True,
-        rank=args.rank,
-        world_size=args.world_size,
-        use_horovod=args.horovod)
+        loss = ClipLossPlusReconstruction(
+            local_loss=args.local_loss,
+            gather_with_grad=args.gather_with_grad,
+            cache_labels=True,
+            rank=args.rank,
+            world_size=args.world_size,
+            use_horovod=args.horovod)
+    else:
+        loss = ClipLoss(
+            local_loss=args.local_loss,
+            gather_with_grad=args.gather_with_grad,
+            cache_labels=True,
+            rank=args.rank,
+            world_size=args.world_size,
+            use_horovod=args.horovod)
 
     data['train'].set_epoch(epoch)  # set epoch in process safe manner via sampler or shared_epoch
     dataloader = data['train'].dataloader
@@ -79,6 +92,7 @@ def train_one_epoch(model, SRTdecoder, data, epoch, optimizer, scaler, scheduler
             images, texts = batch
         else:
             images, texts, msn_images, input_camera_pos, input_rays, target_pixels, target_camera_pos, target_rays = batch
+        
 
         images = images.to(device=device, non_blocking=True)
         texts = texts.to(device=device, non_blocking=True)
@@ -94,12 +108,18 @@ def train_one_epoch(model, SRTdecoder, data, epoch, optimizer, scaler, scheduler
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
 
+        #if is_master(args):
+        #    logging.info("start computation")
         with autocast():
             image_features, text_features, logit_scale = model(images, texts)
             if msn == True:
                 z = model(msn_images, None, input_camera_pos, input_rays)
-                pred_pixels, extras = SRTdecoder(z, target_camera_pos, target_rays, None)
-            total_loss = loss(image_features, text_features, logit_scale)
+                pred_pixels, extras = SRTdecoder(z, target_camera_pos, target_rays)
+                #if is_master(args):
+                #    logging.info("done with computation")
+                total_loss = loss(image_features, text_features, target_pixels, pred_pixels, logit_scale)
+            else:
+                total_loss = loss(image_features, text_features,logit_scale)
 
         if scaler is not None:
             scaler.scale(total_loss).backward()

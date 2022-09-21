@@ -19,6 +19,11 @@ from .utils import freeze_batch_norm_2d, to_2tuple
 
 from srt.srt.layers import RayEncoder
 
+import functools
+from operator import mul
+
+from torch.nn.modules.utils import _pair
+
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -236,9 +241,20 @@ class SRT_parts(nn.Module):
         super().__init__()
         self.pos_octaves = 15
         self.ray_octaves = 15
+        self.num_tokens = 10
+        scale = width ** -0.5
+        self.output_dim = 180
         self.ray_encoder = RayEncoder(pos_octaves=self.pos_octaves, pos_start_octave=pos_start_octave,
                                       ray_octaves=self.ray_octaves)
-        self.srt_conv = nn.Conv2d(in_channels = 6*(self.pos_octaves + self.ray_octaves), out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False) 
+        self.srt_conv = nn.Conv2d(in_channels = 6*(self.pos_octaves + self.ray_octaves), out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
+        val = math.sqrt(6. / float(3 * functools.reduce(mul, _pair(patch_size), 1) + width))  #prompt init per visual prompt tuning
+
+        self.prompt_embeddings_3d = nn.Parameter(torch.zeros(
+                1, self.num_tokens, width))
+        # xavier_uniform initialization
+        nn.init.uniform_(self.prompt_embeddings_3d.data, -val, val) 
+
+        self.proj = None #nn.Parameter(scale * torch.randn(width, self.output_dim))
 
     def forward(self, camera_pos, rays):
 
@@ -317,18 +333,27 @@ class VisualTransformer(nn.Module):
             [self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device),
              x], dim=1)  # shape = [*, grid ** 2 + 1, width]
         x = x + self.positional_embedding.to(x.dtype)
+        x = self.ln_pre(x)
         if camera_pos != None and rays != None:
             x = torch.cat([x,x_srt],dim = 1)
-        x = self.ln_pre(x)
+        
+        x = torch.cat([x[:, :1, :],self.srtencoder.prompt_embeddings_3d.expand(x.shape[0], -1, -1),x[:, 1:, :]], dim=1)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD
+        
+        if camera_pos == None and rays == None:
+            x = self.ln_post(x[:, 0, :])
 
-        x = self.ln_post(x[:, 0, :])
+            if self.proj is not None:
+                x = x @ self.proj
+        else:
+            x = x[:,1:1 + self.srtencoder.num_tokens,:]
 
-        if self.proj is not None:
-            x = x @ self.proj
+            if self.srtencoder.proj is not None:
+                x = x @ self.srtencoder.proj
+
 
         return x
 
