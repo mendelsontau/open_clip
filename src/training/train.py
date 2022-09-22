@@ -46,15 +46,12 @@ def unwrap_model(model):
         return model
 
 
-def train_one_epoch(model, SRTdecoder, data, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
+def train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
     device = torch.device(args.device)
     autocast = get_autocast(args.precision)
 
-    #if is_master(args):
-    #    logging.info("begin")
-
     msn = False
-    if args.dataset_type == "csv-msn":
+    if args.msn_path != None:
         msn = True
 
     model.train()
@@ -81,6 +78,9 @@ def train_one_epoch(model, SRTdecoder, data, epoch, optimizer, scaler, scheduler
     num_batches_per_epoch = dataloader.num_batches
     sample_digits = math.ceil(math.log(dataloader.num_samples + 1, 10))
 
+
+    msn_iterator = iter(msn_loader)
+
     loss_m = AverageMeter()
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
@@ -88,10 +88,10 @@ def train_one_epoch(model, SRTdecoder, data, epoch, optimizer, scaler, scheduler
     for i, batch in enumerate(dataloader):
         step = num_batches_per_epoch * epoch + i
         scheduler(step)
-        if msn == False:
-            images, texts = batch
-        else:
-            images, texts, msn_images, input_camera_pos, input_rays, target_pixels, target_camera_pos, target_rays = batch
+        #if msn == False:
+        images, texts = batch
+        #else:
+        msn_images, input_camera_pos, input_rays, target_pixels, target_camera_pos, target_rays = next(msn_iterator)
         
 
         images = images.to(device=device, non_blocking=True)
@@ -108,15 +108,12 @@ def train_one_epoch(model, SRTdecoder, data, epoch, optimizer, scaler, scheduler
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
 
-        #if is_master(args):
-        #    logging.info("start computation")
+
         with autocast():
             image_features, text_features, logit_scale = model(images, texts)
             if msn == True:
                 z = model(msn_images, None, input_camera_pos, input_rays)
                 pred_pixels, extras = SRTdecoder(z, target_camera_pos, target_rays)
-                #if is_master(args):
-                #    logging.info("done with computation")
                 total_loss = loss(image_features, text_features, target_pixels, pred_pixels, logit_scale)
             else:
                 total_loss = loss(image_features, text_features,logit_scale)

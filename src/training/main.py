@@ -24,7 +24,7 @@ except ImportError:
     hvd = None
 
 from open_clip import create_model_and_transforms, trace_model
-from training.data import get_data
+from training.data import get_data, MsnDataset
 from training.distributed import is_master, init_distributed_device, world_info_from_env
 from training.logger import setup_logging
 from training.params import parse_args
@@ -213,6 +213,10 @@ def main():
                 if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
                     sd = {k[len('module.'):]: v for k, v in sd.items()}
                 model.load_state_dict(sd)
+                sd = checkpoint["decoder_state_dict"]
+                if not args.distributed and next(iter(sd.items()))[0].startswith('module'):
+                    sd = {k[len('module.'):]: v for k, v in sd.items()}
+                SRTdecoder.load_state_dict(sd)
                 if optimizer is not None:
                     optimizer.load_state_dict(checkpoint["optimizer"])
                 if scaler is not None and 'scaler' in checkpoint:
@@ -228,6 +232,15 @@ def main():
     # initialize CLIP datasets
     data = get_data(args, (preprocess_train, preprocess_val), epoch=start_epoch)
     assert len(data), 'At least one train or eval dataset must be specified.'
+
+    #initialize msn dataset
+    msn_dataset = MsnDataset(args.msn_path,data["train"].dataloader.num_samples)
+
+    msn_loader = torch.utils.data.DataLoader(
+        msn_dataset, batch_size=args.msn_batch_size, num_workers=args.workers, pin_memory=True,
+        sampler=None, shuffle=False, persistent_workers = True)
+
+    
 
     # create scheduler if train
     scheduler = None
@@ -269,7 +282,7 @@ def main():
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
 
-        train_one_epoch(model, SRTdecoder, data, epoch, optimizer, scaler, scheduler, args, writer)
+        train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scaler, scheduler, args, writer)
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
@@ -281,6 +294,7 @@ def main():
                 "epoch": completed_epoch,
                 "name": args.name,
                 "state_dict": model.state_dict(),
+                "decoder_state_dict": SRTdecoder.state_dict(),
                 "optimizer": optimizer.state_dict(),
             }
             if scaler is not None:

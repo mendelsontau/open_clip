@@ -34,6 +34,82 @@ except ImportError:
 
 from open_clip import tokenize
 
+class MsnDataset(IterableDataset):
+    def __init__(self, path, num_samples_in_clip_data, points_per_item=8192 * 3, canonical_view=True,
+                 full_scale=False):
+        super(MsnDataset).__init__()
+        self.num_target_pixels = points_per_item
+        self.msn_path = path
+        self.canonical = canonical_view
+        self.full_scale = full_scale
+        mean = (0.48145466, 0.4578275, 0.40821073)  # OpenAI dataset mean
+        std = (0.26862954, 0.26130258, 0.27577711)  # OpenAI dataset std
+        clip_image_size = 224
+        self.resize = Resize(clip_image_size)
+        self.normalize = Normalize(mean=mean, std=std)
+        self.num_scenes = 100000
+        self.num_samples_in_clip_data = num_samples_in_clip_data
+    
+    def __iter__(self):
+        for i in range(self.num_samples_in_clip_data):
+            yield self.prep_item(i % self.num_scenes)
+
+    def prep_item(self, msn_pickle_number):
+        #get MSN data
+        msn_pickle_filename = "MSN_" + str(msn_pickle_number) + ".pkl"
+        msn_pickle_path = os.path.join(self.msn_path,msn_pickle_filename)
+        scenes = pd.read_pickle(msn_pickle_path)
+        msn_idx = 0
+        data = scenes[msn_idx]
+
+
+        #arrange MSN data
+        input_views = np.random.choice(np.arange(10), size=1, replace=False)
+        target_views = np.array(list(set(range(10)) - set(input_views)))
+
+
+        #get input data
+        input_images = np.transpose(data['color_image'][input_views], (0, 3, 1, 2))
+        input_rays = data['ray_directions'][input_views]
+        input_camera_pos = data['ray_origins'][input_views][:, 0, 0]
+
+        if self.canonical:
+            canonical_extrinsic = get_extrinsic(input_camera_pos[0], input_rays[0]).astype(np.float32)
+            input_rays = transform_points(input_rays, canonical_extrinsic, translate=False)
+            nput_camera_pos = transform_points(input_camera_pos, canonical_extrinsic)
+
+        target_pixels = np.reshape(data['color_image'][target_views], (-1, 3))
+        target_rays = np.reshape(data['ray_directions'][target_views], (-1, 3))
+        target_camera_pos = np.reshape(data['ray_origins'][target_views], (-1, 3))
+
+        num_pixels = target_pixels.shape[0]
+
+        if not self.full_scale:
+            sampled_idxs = np.random.choice(np.arange(num_pixels),
+                                            size=(self.num_target_pixels,),
+                                            replace=False)
+
+            target_pixels = target_pixels[sampled_idxs]
+            target_rays = target_rays[sampled_idxs]
+            target_camera_pos = target_camera_pos[sampled_idxs]
+
+        if self.canonical:
+            target_rays = transform_points(target_rays, canonical_extrinsic, translate=False)
+            target_camera_pos = transform_points(target_camera_pos, canonical_extrinsic)
+
+
+        input_images = torch.from_numpy(input_images)
+        input_camera_pos = torch.from_numpy(input_camera_pos)
+        input_rays = torch.from_numpy(input_rays)
+        target_pixels = torch.from_numpy(target_pixels)
+        target_camera_pos = torch.from_numpy(target_camera_pos)
+        target_rays = torch.from_numpy(target_rays)
+            
+
+        return input_images, input_camera_pos,\
+                 input_rays, target_pixels, target_camera_pos, \
+                     target_rays
+
 
 class CsvDataset(Dataset):
     def __init__(self, input_filename, transforms, img_key, caption_key, sep="\t"):
@@ -106,14 +182,16 @@ class CsvMsnDataset(Dataset):
                 images = self.transforms(Image.open(str(self.images[idx])))
                 texts = tokenize([str(self.captions[idx])])[0]
 
+
             #get MSN data
             msn_idx = idx % self.msn_scenes_number
             msn_pickle_number = int(msn_idx/self.scenes_per_pickle)
             msn_pickle_filename = "MSN_" + str(msn_pickle_number) + ".pkl"
             msn_pickle_path = os.path.join(self.msn_path,msn_pickle_filename)
             scenes = pd.read_pickle(msn_pickle_path)
-            msn_idx = idx % self.scenes_per_pickle
+            msn_idx = 0
             data = scenes[msn_idx]
+
 
             #arrange MSN data
             input_views = np.random.choice(np.arange(10), size=1, replace=False)
@@ -179,27 +257,13 @@ class CsvMsnDataset(Dataset):
 
             sceneid = int(data['scene_name'][6:])
 
-        #    result = {
-        #    'images':               images,
-        #    'texts':                texts, 
-        #    'input_images':         torch.from_numpy(input_images),         # [1, 3, h, w]
-        #    'input_camera_pos':     torch.from_numpy(input_camera_pos),     # [1, 3]
-        #    'input_rays':           torch.from_numpy(input_rays),           # [1, h, w, 3]
-        #    'target_pixels':        torch.from_numpy(target_pixels),        # [p, 3]
-        #    'target_camera_pos':    torch.from_numpy(target_camera_pos),    # [p, 3]
-        #    'target_rays':          torch.from_numpy(target_rays),          # [p, 3]
-        #    'sceneid':              torch.Tensor(sceneid),              # int
-        #}
-            #if self.canonical:
-            #    result['transform'] = torch.from_numpy(canonical_extrinsic)     # [3, 4] (optional)
-            #return result
-            input_images = torch.from_numpy(input_images).clone()
-            input_camera_pos = torch.from_numpy(input_camera_pos).clone()
-            input_rays = torch.from_numpy(input_rays).clone()
-            target_pixels = torch.from_numpy(target_pixels).clone()
-            target_camera_pos = torch.from_numpy(target_camera_pos).clone()
-            target_rays = torch.from_numpy(target_rays).clone()
-
+            input_images = torch.from_numpy(input_images)#.clone()
+            input_camera_pos = torch.from_numpy(input_camera_pos)#.clone()
+            input_rays = torch.from_numpy(input_rays)#.clone()
+            target_pixels = torch.from_numpy(target_pixels)#.clone()
+            target_camera_pos = torch.from_numpy(target_camera_pos)#.clone()
+            target_rays = torch.from_numpy(target_rays)#.clone()
+            
 
             return images, texts, input_images, input_camera_pos,\
                  input_rays, target_pixels, target_camera_pos, \
@@ -573,6 +637,7 @@ def get_csv_dataset(args, preprocess_fn, is_train, epoch=0):
         pin_memory=True,
         sampler=sampler,
         drop_last=is_train,
+        persistent_workers = True
     )
     dataloader.num_samples = num_samples
     dataloader.num_batches = len(dataloader)
