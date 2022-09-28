@@ -243,4 +243,4 @@ class ClipLossPlusReconstruction(nn.Module):
             ) / 2 
         
         total_loss += recon_loss
-        return total_loss
+        return total_loss, recon_loss

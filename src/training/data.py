@@ -35,7 +35,7 @@ except ImportError:
 from open_clip import tokenize
 
 class MsnDataset(IterableDataset):
-    def __init__(self, path, num_samples_in_clip_data, points_per_item=8192 * 3, canonical_view=True,
+    def __init__(self, path, num_samples_in_clip_data, mode, points_per_item=8192, canonical_view=True,
                  full_scale=False):
         super(MsnDataset).__init__()
         self.num_target_pixels = points_per_item
@@ -47,8 +47,9 @@ class MsnDataset(IterableDataset):
         clip_image_size = 224
         self.resize = Resize(clip_image_size)
         self.normalize = Normalize(mean=mean, std=std)
-        self.num_scenes = 100000
+        self.num_scenes = 100000 if mode =="train" else 10000
         self.num_samples_in_clip_data = num_samples_in_clip_data
+        self.views_to_take = 9
     
     def __iter__(self):
         for i in range(self.num_samples_in_clip_data):
@@ -76,8 +77,26 @@ class MsnDataset(IterableDataset):
         if self.canonical:
             canonical_extrinsic = get_extrinsic(input_camera_pos[0], input_rays[0]).astype(np.float32)
             input_rays = transform_points(input_rays, canonical_extrinsic, translate=False)
-            nput_camera_pos = transform_points(input_camera_pos, canonical_extrinsic)
+            input_camera_pos = transform_points(input_camera_pos, canonical_extrinsic)
 
+        view_distances = []
+        for tv in target_views:
+            tv = np.array(tv)
+            tv = np.expand_dims(tv,axis=0)
+            tv_camera_pos = data['ray_origins'][tv][:, 0, 0]
+            tv_rays = data['ray_directions'][tv]
+            tv_extrinsic = get_extrinsic(tv_camera_pos[0], tv_rays[0]).astype(np.float32)
+            rel_mat = np.matmul(canonical_extrinsic[0:3,0:3],np.transpose(tv_extrinsic[0:3,0:3]))
+            distance = np.arccos((np.trace(rel_mat) - 1)/2)
+            view_distances.append(distance)
+
+        zipped_lists = zip(view_distances,target_views)
+        sorted_pairs = sorted(zipped_lists)
+        tuples = zip(*sorted_pairs)
+        view_distances, target_views = [ list(tuple) for tuple in  tuples]
+        
+        target_views = target_views[:self.views_to_take]
+        
         target_pixels = np.reshape(data['color_image'][target_views], (-1, 3))
         target_rays = np.reshape(data['ray_directions'][target_views], (-1, 3))
         target_camera_pos = np.reshape(data['ray_origins'][target_views], (-1, 3))

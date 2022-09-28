@@ -31,6 +31,12 @@ def parse_args():
         help="Path to csv file with validation data",
     )
     parser.add_argument(
+        "--val-msn-path",
+        type=str,
+        default=None,
+        help="Path to directory with msn validation data",
+    )
+    parser.add_argument(
         "--train-num-samples",
         type=int,
         default=None,
@@ -109,6 +115,9 @@ def parse_args():
         "--batch-size", type=int, default=64, help="Batch size per GPU."
     )
     parser.add_argument(
+        "--msn-batch-size", type=int, default=16, help="Msn batch size per GPU."
+    )
+    parser.add_argument(
         "--epochs", type=int, default=32, help="Number of epochs to train for."
     )
     parser.add_argument("--lr", type=float, default=None, help="Learning rate.")
@@ -144,6 +153,10 @@ def parse_args():
     )
     parser.add_argument(
         "--val-frequency", type=int, default=1, help="How often to run evaluation with val data."
+    )
+
+    parser.add_argument(
+        "--msn-val-frequency", type=int, default=2, help="How often to run evaluation with msn data."
     )
     parser.add_argument(
         "--resume",

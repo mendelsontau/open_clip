@@ -29,7 +29,7 @@ from training.distributed import is_master, init_distributed_device, world_info_
 from training.logger import setup_logging
 from training.params import parse_args
 from training.scheduler import cosine_lr
-from training.train import train_one_epoch, evaluate
+from training.train import train_one_epoch, evaluate, evaluate_msn
 
 from srt.srt import data as msn_data
 from srt.srt.decoder import SRTDecoder, NerfDecoder
@@ -147,6 +147,8 @@ def main():
         model.lock_image_tower(
             unlocked_groups=args.lock_image_unlocked_groups,
             freeze_bn_stats=args.lock_image_freeze_bn_stats)
+        for param in model.visual.srtencoder.parameters():
+            param.requires_grad_()
 
     if args.grad_checkpointing:
         model.set_grad_checkpointing()
@@ -234,10 +236,17 @@ def main():
     assert len(data), 'At least one train or eval dataset must be specified.'
 
     #initialize msn dataset
-    msn_dataset = MsnDataset(args.msn_path,data["train"].dataloader.num_samples)
+    if args.msn_path != None:
+        msn_dataset = MsnDataset(args.msn_path,data["train"].dataloader.num_samples,"train")
 
-    msn_loader = torch.utils.data.DataLoader(
+        msn_loader = torch.utils.data.DataLoader(
         msn_dataset, batch_size=args.msn_batch_size, num_workers=args.workers, pin_memory=True,
+        sampler=None, shuffle=False, persistent_workers = True)
+    if args.val_msn_path != None:
+        msn_dataset_val = MsnDataset(args.val_msn_path,10000,"val")
+
+        msn_loader_val = torch.utils.data.DataLoader(
+        msn_dataset_val, batch_size=args.batch_size, num_workers=args.workers, pin_memory=True,
         sampler=None, shuffle=False, persistent_workers = True)
 
     
@@ -276,6 +285,8 @@ def main():
 
     if 'train' not in data:
         evaluate(model, data, start_epoch, args, writer)
+        if args.val_msn_path != None:
+            evaluate_msn(model,SRTdecoder,msn_loader_val,start_epoch,args,writer)
         return
 
     for epoch in range(start_epoch, args.epochs):
@@ -287,6 +298,8 @@ def main():
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
             evaluate(model, data, completed_epoch, args, writer)
+            if args.val_msn_path != None:
+                evaluate_msn(model,SRTdecoder,msn_loader_val,completed_epoch,args,writer)
 
         # Saving checkpoints.
         if args.save_logs:

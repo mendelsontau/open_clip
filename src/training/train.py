@@ -19,6 +19,21 @@ from open_clip import ClipLoss
 from .distributed import is_master
 from .zero_shot import zero_shot_eval
 from .precision import get_autocast
+import torchvision
+from torchvision import transforms
+
+class Denormalize(object):
+    def __init__(self, mean, std, inplace=False):
+        self.mean = mean
+        self.demean = [-m/s for m, s in zip(mean, std)]
+        self.std = std
+        self.destd = [1/s for s in std]
+        self.inplace = inplace
+
+    def __call__(self, tensor):
+        tensor =  F.normalize(tensor, self.demean, self.destd, self.inplace)
+        # clamp to get rid of numerical errors
+        return torch.clamp(tensor, 0.0, 1.0)
 
 
 class AverageMeter(object):
@@ -82,6 +97,7 @@ def train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scale
     msn_iterator = iter(msn_loader)
 
     loss_m = AverageMeter()
+    recon_loss = AverageMeter()
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
     end = time.time()
@@ -114,7 +130,7 @@ def train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scale
             if msn == True:
                 z = model(msn_images, None, input_camera_pos, input_rays)
                 pred_pixels, extras = SRTdecoder(z, target_camera_pos, target_rays)
-                total_loss = loss(image_features, text_features, target_pixels, pred_pixels, logit_scale)
+                total_loss, r_loss = loss(image_features, text_features, target_pixels, pred_pixels, logit_scale)
             else:
                 total_loss = loss(image_features, text_features,logit_scale)
 
@@ -148,16 +164,19 @@ def train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scale
         batch_count = i + 1
         if is_master(args) and (i % 100 == 0 or batch_count == num_batches_per_epoch):
             batch_size = len(images)
+            msn_batch_size = msn_images.shape[0]
             num_samples = batch_count * batch_size * args.world_size
             samples_per_epoch = dataloader.num_samples
             percent_complete = 100.0 * batch_count / num_batches_per_epoch
 
             # NOTE loss is coarsely sampled, just master node and per log update
             loss_m.update(total_loss.item(), batch_size)
+            recon_loss.update(r_loss.item(),msn_batch_size)
             logit_scale_scalar = logit_scale.item()
             logging.info(
                 f"Train Epoch: {epoch} [{num_samples:>{sample_digits}}/{samples_per_epoch} ({percent_complete:.0f}%)] "
                 f"Loss: {loss_m.val:#.5g} ({loss_m.avg:#.4g}) "
+                f"Loss_recon: {recon_loss.val:#.5g} ({recon_loss.avg:#.4g}) "
                 f"Data (t): {data_time_m.avg:.3f} "
                 f"Batch (t): {batch_time_m.avg:.3f}, {args.batch_size*args.world_size / batch_time_m.val:#g}/s "
                 f"LR: {optimizer.param_groups[0]['lr']:5f} "
@@ -167,6 +186,7 @@ def train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scale
             # Save train loss / etc. Using non avg meter values as loggers have their own smoothing
             log_data = {
                 "loss": loss_m.val,
+                "loss_recon": recon_loss.val,
                 "data_time": data_time_m.val,
                 "batch_time": batch_time_m.val,
                 "samples_per_scond": args.batch_size*args.world_size / batch_time_m.val,
@@ -204,6 +224,7 @@ def evaluate(model, data, epoch, args, tb_writer=None):
         dataloader = data['val'].dataloader
         num_samples = 0
         samples_per_val = dataloader.num_samples
+        
 
         # FIXME this does not scale past small eval datasets
         # all_image_features @ all_text_features will blow up memory and compute very quickly
@@ -254,6 +275,81 @@ def evaluate(model, data, epoch, args, tb_writer=None):
 
     logging.info(
         f"Eval Epoch: {epoch} "
+        + "\t".join([f"{k}: {round(v, 4):.4f}" for k, v in metrics.items()])
+    )
+
+    if args.save_logs:
+        for name, val in metrics.items():
+            if tb_writer is not None:
+                tb_writer.add_scalar(f"val/{name}", val, epoch)
+
+        with open(os.path.join(args.checkpoint_path, "results.jsonl"), "a+") as f:
+            f.write(json.dumps(metrics))
+            f.write("\n")
+
+    if args.wandb:
+        assert wandb is not None, 'Please install wandb.'
+        for name, val in metrics.items():
+            wandb.log({f"val/{name}": val, 'epoch': epoch})
+
+    return metrics
+
+
+def evaluate_msn(model, SRTdecoder, msn_loader, epoch, args, tb_writer=None):
+    metrics = {}
+    if not is_master(args):
+        return metrics
+    device = torch.device(args.device)
+    model.eval()
+    SRTdecoder.eval()
+
+
+    autocast = get_autocast(args.precision)
+
+    
+    if (args.msn_val_frequency and ((epoch % args.msn_val_frequency) == 0 or epoch == args.epochs)):
+        dataloader = msn_loader
+        num_samples = 0
+        samples_per_val = 10000
+        cumulative_loss = 0.0
+        with torch.no_grad():
+            for i, batch in enumerate(dataloader):
+                msn_images, input_camera_pos, input_rays, target_pixels, target_camera_pos, target_rays = batch
+
+
+                msn_images = msn_images.to(device=device, non_blocking=True).flatten(0,1)
+                input_camera_pos = input_camera_pos.to(device=device, non_blocking=True)
+                input_rays = input_rays.to(device=device, non_blocking=True)
+                target_pixels = target_pixels.to(device=device, non_blocking=True)
+                target_camera_pos = target_camera_pos.to(device=device, non_blocking=True)
+                target_rays = target_rays.to(device=device, non_blocking=True)
+
+                with autocast():
+                    z = model(msn_images, None, input_camera_pos, input_rays)
+                    pred_pixels, extras = SRTdecoder(z, target_camera_pos, target_rays)
+
+
+                    batch_size = msn_images.shape[0]
+                    total_loss = ((pred_pixels - target_pixels)**2).mean((1, 2))
+                    total_loss = total_loss.mean(0)                   
+
+                cumulative_loss += total_loss * batch_size
+                num_samples += batch_size
+                if is_master(args) and (i % 100) == 0:
+                    logging.info(
+                        f"MSN Eval Epoch: {epoch} [{num_samples} / {samples_per_val}]\t"
+                        f"Loss: {cumulative_loss / num_samples:.6f}\t")
+
+            loss = cumulative_loss / num_samples
+            metrics.update(
+                {"msn_val_loss": loss.item(), "epoch": epoch, "num_samples": num_samples}
+            )
+
+    if not metrics:
+        return metrics
+
+    logging.info(
+        f"MSN Eval Epoch: {epoch} "
         + "\t".join([f"{k}: {round(v, 4):.4f}" for k, v in metrics.items()])
     )
 
