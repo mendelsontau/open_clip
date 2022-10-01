@@ -159,6 +159,9 @@ def parse_args():
         "--msn-val-frequency", type=int, default=2, help="How often to run evaluation with msn data."
     )
     parser.add_argument(
+        "--vlchecklist-frequency", type=int, default=4, help="How often to run evaluation with VL-CheckList."
+    )
+    parser.add_argument(
         "--resume",
         default=None,
         type=str,

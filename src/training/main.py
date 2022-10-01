@@ -24,7 +24,7 @@ except ImportError:
     hvd = None
 
 from open_clip import create_model_and_transforms, trace_model
-from training.data import get_data, MsnDataset
+from training.data import MsnDatasetMap, get_data, MsnDataset
 from training.distributed import is_master, init_distributed_device, world_info_from_env
 from training.logger import setup_logging
 from training.params import parse_args
@@ -34,6 +34,18 @@ from training.train import train_one_epoch, evaluate, evaluate_msn
 from srt.srt import data as msn_data
 from srt.srt.decoder import SRTDecoder, NerfDecoder
 import yaml
+
+from VL_CheckList.example_models.open_clip.engine import OPEN_CLIP
+from VL_CheckList.vl_checklist.evaluate import Evaluate
+
+from torch.utils.data.distributed import DistributedSampler
+
+def worker_init_fn(worker_id):
+    ''' Worker init function to ensure true randomness.
+    '''
+    random_data = os.urandom(4)
+    base_seed = int.from_bytes(random_data, byteorder="big")
+    np.random.seed(base_seed + worker_id)
 
 
 def random_seed(seed=42, rank=0):
@@ -239,15 +251,18 @@ def main():
     if args.msn_path != None:
         msn_dataset = MsnDataset(args.msn_path,data["train"].dataloader.num_samples,"train")
 
+        sampler = None
+
         msn_loader = torch.utils.data.DataLoader(
         msn_dataset, batch_size=args.msn_batch_size, num_workers=args.workers, pin_memory=True,
-        sampler=None, shuffle=False, persistent_workers = True)
+        sampler = sampler, shuffle = False, worker_init_fn=worker_init_fn, persistent_workers=True)
+
     if args.val_msn_path != None:
-        msn_dataset_val = MsnDataset(args.val_msn_path,10000,"val")
+        msn_dataset_val = MsnDatasetMap(args.val_msn_path,1000,"val")
 
         msn_loader_val = torch.utils.data.DataLoader(
         msn_dataset_val, batch_size=args.batch_size, num_workers=args.workers, pin_memory=True,
-        sampler=None, shuffle=False, persistent_workers = True)
+        sampler=None, shuffle=False)
 
     
 
@@ -287,6 +302,10 @@ def main():
         evaluate(model, data, start_epoch, args, writer)
         if args.val_msn_path != None:
             evaluate_msn(model,SRTdecoder,msn_loader_val,start_epoch,args,writer)
+        if args.vlchecklist_frequency > 0:
+            vl_model = OPEN_CLIP(f'epoch {start_epoch}',model, preprocess_val)
+            vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
+            vl_eval.start()
         return
 
     for epoch in range(start_epoch, args.epochs):
@@ -300,6 +319,10 @@ def main():
             evaluate(model, data, completed_epoch, args, writer)
             if args.val_msn_path != None:
                 evaluate_msn(model,SRTdecoder,msn_loader_val,completed_epoch,args,writer)
+            if args.vlchecklist_frequency > 0 and completed_epoch % args.vlchecklist_frequency == 0:
+                vl_model = OPEN_CLIP(f'epoch {start_epoch}',model, preprocess_val)
+                vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
+                vl_eval.start()
 
         # Saving checkpoints.
         if args.save_logs:
