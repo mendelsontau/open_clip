@@ -21,19 +21,8 @@ from .zero_shot import zero_shot_eval
 from .precision import get_autocast
 import torchvision
 from torchvision import transforms
-
-class Denormalize(object):
-    def __init__(self, mean, std, inplace=False):
-        self.mean = mean
-        self.demean = [-m/s for m, s in zip(mean, std)]
-        self.std = std
-        self.destd = [1/s for s in std]
-        self.inplace = inplace
-
-    def __call__(self, tensor):
-        tensor =  F.normalize(tensor, self.demean, self.destd, self.inplace)
-        # clamp to get rid of numerical errors
-        return torch.clamp(tensor, 0.0, 1.0)
+import srt.srt.utils.visualize as vis
+from srt.srt.utils import nerf
 
 
 class AverageMeter(object):
@@ -107,8 +96,25 @@ def train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scale
         #if msn == False:
         images, texts = batch
         #else:
-        msn_images, input_camera_pos, input_rays, target_pixels, target_camera_pos, target_rays = next(msn_iterator)
-        
+        #msn_images, input_camera_pos, input_rays, target_pixels, target_camera_pos, target_rays = next(msn_iterator)
+        data = next(msn_iterator)
+        msn_images = data['input_images']
+        input_camera_pos = data['input_camera_pos']
+        input_rays = data['input_rays']
+        target_pixels = data['target_pixels']
+        target_camera_pos = data['target_camera_pos']
+        target_rays = data['target_rays']
+
+        #msn_images = torch.rand((args.msn_batch_size,1,3,224,224),dtype= images.dtype)
+        #input_camera_pos = torch.rand((args.msn_batch_size,1,3),dtype= images.dtype)
+        #input_rays = torch.rand((args.msn_batch_size,1,224,224,3),dtype= images.dtype)
+        #target_pixels = torch.rand((args.msn_batch_size,8192,3),dtype= images.dtype)
+        #target_pixels = torch.rand((args.msn_batch_size,8192,3),dtype= images.dtype)
+        #target_camera_pos = torch.rand((args.msn_batch_size,8192,3),dtype= images.dtype)
+        #target_rays = torch.rand((args.msn_batch_size,8192,3),dtype= images.dtype)
+
+        #logging.info(f'Device: {args.device}, data0: {msn_images[0,0,0,0,0]}, data1: {msn_images[1,0,0,0,0]}, data2: {msn_images[2,0,0,0,0]}, data3: {msn_images[3,0,0,0,0]}\
+        #    data4: {msn_images[4,0,0,0,0]}, data5: {msn_images[5,0,0,0,0]}, data6: {msn_images[6,0,0,0,0]}, data7: {msn_images[7,0,0,0,0]}')
 
         images = images.to(device=device, non_blocking=True)
         texts = texts.to(device=device, non_blocking=True)
@@ -310,11 +316,18 @@ def evaluate_msn(model, SRTdecoder, msn_loader, epoch, args, tb_writer=None):
     if (args.msn_val_frequency and ((epoch % args.msn_val_frequency) == 0 or epoch == args.epochs)):
         dataloader = msn_loader
         num_samples = 0
-        samples_per_val = 10000
+        samples_per_val = 1000
         cumulative_loss = 0.0
         with torch.no_grad():
-            for i, batch in enumerate(dataloader):
-                msn_images, input_camera_pos, input_rays, target_pixels, target_camera_pos, target_rays = batch
+            for i, data in enumerate(dataloader):
+                #msn_images, input_camera_pos, input_rays, target_pixels, target_camera_pos, target_rays = batch
+                #data = next(msn_iterator)
+                msn_images = data['input_images']
+                input_camera_pos = data['input_camera_pos']
+                input_rays = data['input_rays']
+                target_pixels = data['target_pixels']
+                target_camera_pos = data['target_camera_pos']
+                target_rays = data['target_rays']
 
 
                 msn_images = msn_images.to(device=device, non_blocking=True).flatten(0,1)
@@ -388,3 +401,102 @@ def get_metrics(image_features, text_features, logit_scale):
             metrics[f"{name}_R@{k}"] = np.mean(preds < k)
 
     return metrics
+
+
+def render_image(z, srtdecoder, args, camera_pos, rays):
+    inv_trans = transforms.Compose([ transforms.Normalize(mean = [ 0., 0., 0. ],
+                                                     std = [ 1/0.26862954, 1/0.26130258, 1/0.27577711 ]),
+                                transforms.Normalize(mean = [ -0.48145466, -0.4578275, -0.40821073 ],
+                                                     std = [ 1., 1., 1. ]),
+                               ])
+    batch_size, height, width = rays.shape[:3]
+    rays = rays.flatten(1, 2)
+    camera_pos = camera_pos.unsqueeze(1).repeat(1, rays.shape[1], 1)
+
+    max_num_rays = 8192 * \
+                args.msn_batch_size // (rays.shape[0])
+    num_rays = rays.shape[1]
+    img = torch.zeros_like(rays)
+    all_extras = []
+    for i in range(0, num_rays, max_num_rays):
+        img[:, i:i+max_num_rays], extras = srtdecoder(
+                z=z, x=camera_pos[:, i:i+max_num_rays], rays=rays[:, i:i+max_num_rays])
+        all_extras.append(extras)
+
+    agg_extras = {}
+    for key in all_extras[0]:
+        agg_extras[key] = torch.cat([extras[key] for extras in all_extras], 1)
+        agg_extras[key] = agg_extras[key].view(batch_size, height, width, -1)
+
+    img = img.view(img.shape[0], height, width, 3)
+    img = torch.permute(img,(0,3,1,2))
+    img = inv_trans(img)
+    img = torch.permute(img,(0,2,3,1))
+
+
+    return img, agg_extras
+
+
+def visualize(model, srtdecoder, args, data, epoch, mode='val'):
+    model.eval()
+    autocast = get_autocast(args.precision)
+    inv_trans = transforms.Compose([ transforms.Normalize(mean = [ 0., 0., 0. ],
+                                                     std = [ 1/0.26862954, 1/0.26130258, 1/0.27577711 ]),
+                                transforms.Normalize(mean = [ -0.48145466, -0.4578275, -0.40821073 ],
+                                                     std = [ 1., 1., 1. ]),
+                               ])
+
+    with torch.no_grad():
+        device = torch.device(args.device)
+        input_images = data.get('input_images').to(device)
+        input_camera_pos = data.get('input_camera_pos').to(device)
+        input_rays = data.get('input_rays').to(device)
+
+        camera_pos_base = input_camera_pos[:, 0]
+        input_rays_base = input_rays[:, 0]
+
+        if 'transform' in data:
+            # If the data is transformed in some different coordinate system, where
+            # rotating around the z axis doesn't make sense, we first undo this transform,
+            # then rotate, and then reapply it.
+                
+            transform = data['transform'].to(device)
+            inv_transform = torch.inverse(transform)
+            camera_pos_base = nerf.transform_points_torch(camera_pos_base, inv_transform)
+            input_rays_base = nerf.transform_points_torch(input_rays_base, inv_transform.unsqueeze(1).unsqueeze(2), translate=False)
+        else:
+            transform = None
+
+        input_images_np = np.transpose(inv_trans(input_images).cpu().numpy(), (0, 1, 3, 4, 2))
+
+        with autocast():
+            z = model(input_images.flatten(0,1), None,  input_camera_pos, input_rays)
+
+        batch_size, num_input_images, height, width, _ = input_rays.shape
+
+        num_angles = 6
+
+        columns = []
+        for i in range(num_input_images):
+            header = 'input' if num_input_images == 1 else f'input {i+1}'
+            columns.append((header, input_images_np[:, i], 'image'))
+
+        all_extras = []
+        for i in range(num_angles):
+            angle = i * (2 * math.pi / num_angles)
+            angle_deg = (i * 360) // num_angles
+
+            camera_pos_rot = nerf.rotate_around_z_axis_torch(camera_pos_base, angle)
+            rays_rot = nerf.rotate_around_z_axis_torch(input_rays_base, angle)
+
+            if transform is not None:
+                camera_pos_rot = nerf.transform_points_torch(camera_pos_rot, transform)
+                rays_rot = nerf.transform_points_torch(rays_rot, transform.unsqueeze(1).unsqueeze(2), translate=False)
+
+            img, extras = render_image(z, srtdecoder, args, camera_pos_rot, rays_rot)
+            all_extras.append(extras)
+            columns.append((f'render {angle_deg}°', img.cpu().numpy(), 'image'))
+
+
+        output_img_path = os.path.join(args.checkpoint_path, f'renders-{mode}-{epoch}')
+        vis.draw_visualization_grid(columns, output_img_path)

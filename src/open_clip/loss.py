@@ -242,5 +242,5 @@ class ClipLossPlusReconstruction(nn.Module):
             F.cross_entropy(logits_per_text, labels)
             ) / 2 
         
-        total_loss += recon_loss
+        total_loss = recon_loss + total_loss
         return total_loss, recon_loss

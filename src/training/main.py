@@ -29,7 +29,7 @@ from training.distributed import is_master, init_distributed_device, world_info_
 from training.logger import setup_logging
 from training.params import parse_args
 from training.scheduler import cosine_lr
-from training.train import train_one_epoch, evaluate, evaluate_msn
+from training.train import train_one_epoch, evaluate, evaluate_msn, visualize
 
 from srt.srt import data as msn_data
 from srt.srt.decoder import SRTDecoder, NerfDecoder
@@ -151,6 +151,13 @@ def main():
     #init SRT decoder
     SRTdecoder = SRTDecoder(pos_start_octave = -5).to(device)
 
+    if args.pretrain_srt != None:
+        srt_checkpoint = torch.load(args.pretrain_srt, map_location='cpu')
+        encoder_sd = srt_checkpoint["encoder"]
+        decoder_sd = srt_checkpoint["decoder"]
+        model.visual.load_state_dict(encoder_sd,strict = False)
+        SRTdecoder.load_state_dict(decoder_sd, strict = False)
+
     if args.trace:
         model = trace_model(model, batch_size=args.batch_size, device=device)
 
@@ -249,21 +256,32 @@ def main():
 
     #initialize msn dataset
     if args.msn_path != None:
-        msn_dataset = MsnDataset(args.msn_path,data["train"].dataloader.num_samples,"train")
+        #msn_dataset = MsnDatasetMap(args.msn_path,data["train"].dataloader.num_samples,"train")
 
-        sampler = None
+        msn_dataset = msn_data.MultishapenetDataset(args.msn_path,"train")
 
         msn_loader = torch.utils.data.DataLoader(
-        msn_dataset, batch_size=args.msn_batch_size, num_workers=args.workers, pin_memory=True,
-        sampler = sampler, shuffle = False, worker_init_fn=worker_init_fn, persistent_workers=True)
+        msn_dataset, batch_size=args.msn_batch_size, num_workers=1, pin_memory=True,
+        sampler = None, shuffle=False, worker_init_fn=msn_data.worker_init_fn, persistent_workers=True)
+
+        vis_loader_train = torch.utils.data.DataLoader(
+            msn_dataset, batch_size=12, shuffle=False, worker_init_fn=msn_data.worker_init_fn)
+
+        msn_dataset.mode = 'val'  # Get validation info from training set just this once
+        data_vis_train = next(iter(vis_loader_train))  # Validation set data for visualization
+        msn_dataset.mode = 'train'
 
     if args.val_msn_path != None:
-        msn_dataset_val = MsnDatasetMap(args.val_msn_path,1000,"val")
+        msn_dataset_val = msn_data.MultishapenetDataset(args.val_msn_path,"val",max_len=1000)
 
         msn_loader_val = torch.utils.data.DataLoader(
-        msn_dataset_val, batch_size=args.batch_size, num_workers=args.workers, pin_memory=True,
-        sampler=None, shuffle=False)
+        msn_dataset_val, batch_size=args.msn_batch_size, num_workers=1, pin_memory=False,
+        sampler=None, shuffle=False, worker_init_fn=msn_data.worker_init_fn, persistent_workers=True)
 
+        vis_loader_val = torch.utils.data.DataLoader(
+            msn_dataset, batch_size=12, shuffle=False, worker_init_fn=msn_data.worker_init_fn)
+
+        data_vis_val = next(iter(vis_loader_val))  # Validation set data for visualization
     
 
     # create scheduler if train
@@ -302,6 +320,7 @@ def main():
         evaluate(model, data, start_epoch, args, writer)
         if args.val_msn_path != None:
             evaluate_msn(model,SRTdecoder,msn_loader_val,start_epoch,args,writer)
+            visualize(model=model,srtdecoder=SRTdecoder, args = args, data = data_vis_val, epoch = start_epoch, mode = "val")
         if args.vlchecklist_frequency > 0:
             vl_model = OPEN_CLIP(f'epoch {start_epoch}',model, preprocess_val)
             vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip.yaml", model = vl_model,epoch = start_epoch,args = args,tb_writer = writer)
@@ -319,6 +338,8 @@ def main():
             evaluate(model, data, completed_epoch, args, writer)
             if args.val_msn_path != None:
                 evaluate_msn(model,SRTdecoder,msn_loader_val,completed_epoch,args,writer)
+                visualize(model=model,srtdecoder=SRTdecoder, args = args, data = data_vis_train, epoch = completed_epoch, mode = "train")
+                visualize(model=model,srtdecoder=SRTdecoder, args = args, data = data_vis_val, epoch = completed_epoch, mode = "val")
             if args.vlchecklist_frequency > 0 and completed_epoch % args.vlchecklist_frequency == 0:
                 vl_model = OPEN_CLIP(f'epoch {start_epoch}',model, preprocess_val)
                 vl_eval = Evaluate(config_file="VL_CheckList/configs/open_clip.yaml", model = vl_model,epoch = completed_epoch,args = args,tb_writer = writer)
