@@ -155,8 +155,8 @@ def main():
         srt_checkpoint = torch.load(args.pretrain_srt, map_location='cpu')
         encoder_sd = srt_checkpoint["encoder"]
         decoder_sd = srt_checkpoint["decoder"]
-        model.visual.load_state_dict(encoder_sd,strict = False)
-        SRTdecoder.load_state_dict(decoder_sd, strict = False)
+        model.visual.load_state_dict(encoder_sd)
+        SRTdecoder.load_state_dict(decoder_sd)
 
     if args.trace:
         model = trace_model(model, batch_size=args.batch_size, device=device)
@@ -279,7 +279,7 @@ def main():
         sampler=None, shuffle=False, worker_init_fn=msn_data.worker_init_fn, persistent_workers=True)
 
         vis_loader_val = torch.utils.data.DataLoader(
-            msn_dataset, batch_size=12, shuffle=False, worker_init_fn=msn_data.worker_init_fn)
+            msn_dataset_val, batch_size=12, shuffle=False, worker_init_fn=msn_data.worker_init_fn)
 
         data_vis_val = next(iter(vis_loader_val))  # Validation set data for visualization
     
