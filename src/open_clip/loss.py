@@ -190,6 +190,7 @@ class ClipLossPlusReconstruction(nn.Module):
             rank=0,
             world_size=1,
             use_horovod=False,
+            recon_lambda=1.0
     ):
         super().__init__()
         self.local_loss = local_loss
@@ -198,6 +199,7 @@ class ClipLossPlusReconstruction(nn.Module):
         self.rank = rank
         self.world_size = world_size
         self.use_horovod = use_horovod
+        self.recon_lambda = recon_lambda
 
         # cache state
         self.prev_num_logits = 0
@@ -242,5 +244,5 @@ class ClipLossPlusReconstruction(nn.Module):
             F.cross_entropy(logits_per_text, labels)
             ) / 2 
         
-        total_loss = recon_loss + total_loss
+        total_loss = self.recon_lambda*recon_loss + total_loss
         return total_loss, recon_loss

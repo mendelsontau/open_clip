@@ -10,6 +10,7 @@ import torch.nn.functional as F
 
 from open_clip.loss import ClipLossPlusReconstruction, ClipLoss
 
+
 try:
     import wandb
 except ImportError:
@@ -67,7 +68,8 @@ def train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scale
             cache_labels=True,
             rank=args.rank,
             world_size=args.world_size,
-            use_horovod=args.horovod)
+            use_horovod=args.horovod,
+            recon_lambda = args.recon_lambda)
     else:
         loss = ClipLoss(
             local_loss=args.local_loss,
@@ -105,16 +107,7 @@ def train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scale
         target_camera_pos = data['target_camera_pos']
         target_rays = data['target_rays']
 
-        #msn_images = torch.rand((args.msn_batch_size,1,3,224,224),dtype= images.dtype)
-        #input_camera_pos = torch.rand((args.msn_batch_size,1,3),dtype= images.dtype)
-        #input_rays = torch.rand((args.msn_batch_size,1,224,224,3),dtype= images.dtype)
-        #target_pixels = torch.rand((args.msn_batch_size,8192,3),dtype= images.dtype)
-        #target_pixels = torch.rand((args.msn_batch_size,8192,3),dtype= images.dtype)
-        #target_camera_pos = torch.rand((args.msn_batch_size,8192,3),dtype= images.dtype)
-        #target_rays = torch.rand((args.msn_batch_size,8192,3),dtype= images.dtype)
 
-        #logging.info(f'Device: {args.device}, data0: {msn_images[0,0,0,0,0]}, data1: {msn_images[1,0,0,0,0]}, data2: {msn_images[2,0,0,0,0]}, data3: {msn_images[3,0,0,0,0]}\
-        #    data4: {msn_images[4,0,0,0,0]}, data5: {msn_images[5,0,0,0,0]}, data6: {msn_images[6,0,0,0,0]}, data7: {msn_images[7,0,0,0,0]}')
 
         images = images.to(device=device, non_blocking=True)
         texts = texts.to(device=device, non_blocking=True)

@@ -128,6 +128,7 @@ def parse_args():
     parser.add_argument(
         "--warmup", type=int, default=10000, help="Number of steps to warmup for."
     )
+    parser.add_argument("--recon-lambda", type=float, default=1.0, help="reconstruction loss lambda")
     parser.add_argument(
         "--use-bn-sync",
         default=False,
