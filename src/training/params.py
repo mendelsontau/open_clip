@@ -176,6 +176,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--srt-teacher",
+        default=None,
+        type=str,
+        help="path to srt teacher",
+    )
+
+    parser.add_argument(
         "--precision",
         choices=["amp", "amp_bfloat16", "fp16", "fp32"],
         default="amp",

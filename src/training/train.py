@@ -51,7 +51,7 @@ def unwrap_model(model):
         return model
 
 
-def train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
+def train_one_epoch(model, teacher_encoder, data, msn_loader, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
     device = torch.device(args.device)
     autocast = get_autocast(args.precision)
 
@@ -61,7 +61,6 @@ def train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scale
 
     model.train()
     if msn:
-        SRTdecoder.train()
         loss = ClipLossPlusReconstruction(
             local_loss=args.local_loss,
             gather_with_grad=args.gather_with_grad,
@@ -95,10 +94,9 @@ def train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scale
     for i, batch in enumerate(dataloader):
         step = num_batches_per_epoch * epoch + i
         scheduler(step)
-        #if msn == False:
+
         images, texts = batch
-        #else:
-        #msn_images, input_camera_pos, input_rays, target_pixels, target_camera_pos, target_rays = next(msn_iterator)
+
         data = next(msn_iterator)
         msn_images = data['input_images']
         input_camera_pos = data['input_camera_pos']
@@ -109,11 +107,15 @@ def train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scale
 
 
 
+
+
+
         images = images.to(device=device, non_blocking=True)
         texts = texts.to(device=device, non_blocking=True)
+
         
         if msn == True:
-            msn_images = msn_images.to(device=device, non_blocking=True).flatten(0,1)
+            msn_images = msn_images.to(device=device, non_blocking=True)
             input_camera_pos = input_camera_pos.to(device=device, non_blocking=True)
             input_rays = input_rays.to(device=device, non_blocking=True)
             target_pixels = target_pixels.to(device=device, non_blocking=True)
@@ -125,11 +127,15 @@ def train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scale
 
 
         with autocast():
+            with torch.no_grad:
+                z_teacher = teacher_encoder(msn_images, input_camera_pos, input_rays)
+                z_teahcer = z_teacher.flatten(1,2)
+
             image_features, text_features, logit_scale = model(images, texts)
             if msn == True:
                 z = model(msn_images, None, input_camera_pos, input_rays)
-                pred_pixels, extras = SRTdecoder(z, target_camera_pos, target_rays)
-                total_loss, r_loss = loss(image_features, text_features, target_pixels, pred_pixels, logit_scale)
+                z = z.flatten(1,2)
+                total_loss, r_loss = loss(image_features, text_features, z_teacher, z, logit_scale)
             else:
                 total_loss = loss(image_features, text_features,logit_scale)
 

@@ -241,7 +241,7 @@ class SRT_parts(nn.Module):
         super().__init__()
         self.pos_octaves = 15
         self.ray_octaves = 15
-        self.num_tokens = 10
+        self.num_tokens = 196
         scale = width ** -0.5
         self.output_dim = 180
         self.ray_encoder = RayEncoder(pos_octaves=self.pos_octaves, pos_start_octave=pos_start_octave,
@@ -346,12 +346,12 @@ class VisualTransformer(nn.Module):
         if camera_pos == None and rays == None:
             x = self.ln_post(x[:, 0, :])
 
-            if self.proj is not None:
+        if self.proj is not None:
                 x = x @ self.proj
         else:
             x = x[:,1:1 + self.srtencoder.num_tokens,:]
 
-            if self.srtencoder.proj is not None:
+        if self.srtencoder.proj is not None:
                 x = x @ self.srtencoder.proj
 
 

@@ -65,8 +65,8 @@ def gather_features(
 def gather_features_recon(
         image_features,
         text_features,
-        target_pixels,
-        pred_pixels,
+        target_z,
+        pred_z,
         local_loss=False,
         gather_with_grad=False,
         rank=0,
@@ -96,29 +96,29 @@ def gather_features_recon(
         if gather_with_grad:
             all_image_features = torch.cat(torch.distributed.nn.all_gather(image_features), dim=0)
             all_text_features = torch.cat(torch.distributed.nn.all_gather(text_features), dim=0)
-            all_target_pixels = torch.cat(torch.distributed.nn.all_gather(target_pixels), dim=0)
-            all_pred_pixels = torch.cat(torch.distributed.nn.all_gather(pred_pixels), dim=0)
+            all_target_z = torch.cat(torch.distributed.nn.all_gather(target_z), dim=0)
+            all_pred_z = torch.cat(torch.distributed.nn.all_gather(pred_z), dim=0)
         else:
             gathered_image_features = [torch.zeros_like(image_features) for _ in range(world_size)]
             gathered_text_features = [torch.zeros_like(text_features) for _ in range(world_size)]
-            gathered_target_pixels = [torch.zeros_like(target_pixels) for _ in range(world_size)]
-            gathered_pred_pixels = [torch.zeros_like(pred_pixels) for _ in range(world_size)]
+            gathered_target_z = [torch.zeros_like(target_z) for _ in range(world_size)]
+            gathered_pred_z = [torch.zeros_like(pred_z) for _ in range(world_size)]
             dist.all_gather(gathered_image_features, image_features)
             dist.all_gather(gathered_text_features, text_features)
-            dist.all_gather(gathered_target_pixels, target_pixels)
-            dist.all_gather(gathered_pred_pixels, pred_pixels)
+            dist.all_gather(gathered_target_z, target_z)
+            dist.all_gather(gathered_pred_z, pred_z)
             if not local_loss:
                 # ensure grads for local rank when all_* features don't have a gradient
                 gathered_image_features[rank] = image_features
                 gathered_text_features[rank] = text_features
-                gathered_target_pixels[rank] = target_pixels
-                gathered_pred_pixels[rank] = pred_pixels
+                gathered_target_z[rank] = target_z
+                gathered_pred_z[rank] = pred_z
             all_image_features = torch.cat(gathered_image_features, dim=0)
             all_text_features = torch.cat(gathered_text_features, dim=0)
-            all_target_pixels = torch.cat(gathered_target_pixels, dim=0)
-            all_pred_pixels = torch.cat(gathered_pred_pixels, dim=0)
+            all_target_z = torch.cat(gathered_target_z, dim=0)
+            all_pred_z = torch.cat(gathered_pred_z, dim=0)
 
-    return all_image_features, all_text_features, all_target_pixels, all_pred_pixels
+    return all_image_features, all_text_features, all_target_z, all_pred_z
 
 
 class ClipLoss(nn.Module):
@@ -205,11 +205,11 @@ class ClipLossPlusReconstruction(nn.Module):
         self.prev_num_logits = 0
         self.labels = {}
 
-    def forward(self, image_features, text_features, target_pixels, pred_pixels, logit_scale):
+    def forward(self, image_features, text_features, target_z, pred_z, logit_scale):
         device = image_features.device
         if self.world_size > 1:
-            all_image_features, all_text_features, target_pixels, pred_pixels = gather_features_recon(
-                image_features, text_features, target_pixels, pred_pixels,
+            all_image_features, all_text_features, target_z, pred_z = gather_features_recon(
+                image_features, text_features, target_z, pred_z,
                 self.local_loss, self.gather_with_grad, self.rank, self.world_size, self.use_horovod)
 
             if self.local_loss:
@@ -236,7 +236,7 @@ class ClipLossPlusReconstruction(nn.Module):
         
         recon_loss = 0.
 
-        recon_loss = recon_loss + ((pred_pixels - target_pixels)**2).mean((1, 2))
+        recon_loss = recon_loss + ((pred_z - target_z)**2).mean((1, 2))
         recon_loss = recon_loss.mean(0)
 
         total_loss = (

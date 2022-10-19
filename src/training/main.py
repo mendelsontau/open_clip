@@ -33,6 +33,7 @@ from training.train import train_one_epoch, evaluate, evaluate_msn, visualize
 
 from srt.srt import data as msn_data
 from srt.srt.decoder import SRTDecoder, NerfDecoder
+from srt.srt.encoder import SRTEncoder
 import yaml
 
 from VL_CheckList.example_models.open_clip.engine import OPEN_CLIP
@@ -158,6 +159,20 @@ def main():
         model.visual.load_state_dict(encoder_sd)
         SRTdecoder.load_state_dict(decoder_sd)
 
+    if args.srt_teacher != None:
+        srt_checkpoint = torch.load(args.srt_teacher, map_location='cpu')
+        encoder_sd = srt_checkpoint["encoder"]
+        decoder_sd = srt_checkpoint["decoder"]
+        SRTdecoder.load_state_dict(decoder_sd)
+        teacher_encoder = SRTEncoder(pos_start_octave = -5).to(device)
+        teacher_encoder.load_state_dict(encoder_sd)
+        for param in SRTdecoder.parameters():
+            param.requires_grad = False
+        for param in teacher_encoder.parameters():
+            param.requires_grad = False
+
+
+
     if args.trace:
         model = trace_model(model, batch_size=args.batch_size, device=device)
 
@@ -192,6 +207,8 @@ def main():
             ddp_args['static_graph'] = True
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args)
         SRTdecoder = torch.nn.parallel.DistributedDataParallel(SRTdecoder, device_ids=[device], **ddp_args)
+        if args.srt_teacher != None:
+            teacher_encoder = torch.nn.parallel.DistributedDataParallel(teacher_encoder, device_ids=[device], **ddp_args)
 
     # create optimizer and scaler
     optimizer = None
@@ -331,7 +348,7 @@ def main():
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
 
-        train_one_epoch(model, SRTdecoder, data, msn_loader, epoch, optimizer, scaler, scheduler, args, writer)
+        train_one_epoch(model, teacher_encoder, data, msn_loader, epoch, optimizer, scaler, scheduler, args, writer)
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
