@@ -127,10 +127,10 @@ def train_one_epoch(model, teacher_encoder, data, msn_loader, epoch, optimizer, 
 
 
         with autocast():
-            with torch.no_grad:
+            with torch.no_grad():
                 z_teacher = teacher_encoder(msn_images, input_camera_pos, input_rays)
-                z_teahcer = z_teacher.flatten(1,2)
-
+                z_teacher = z_teacher.flatten(1,2)
+            msn_images = msn_images.flatten(0,1)
             image_features, text_features, logit_scale = model(images, texts)
             if msn == True:
                 z = model(msn_images, None, input_camera_pos, input_rays)

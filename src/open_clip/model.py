@@ -345,13 +345,12 @@ class VisualTransformer(nn.Module):
         
         if camera_pos == None and rays == None:
             x = self.ln_post(x[:, 0, :])
-
-        if self.proj is not None:
+            if self.proj is not None:
                 x = x @ self.proj
         else:
             x = x[:,1:1 + self.srtencoder.num_tokens,:]
 
-        if self.srtencoder.proj is not None:
+            if self.srtencoder.proj is not None:
                 x = x @ self.srtencoder.proj
 
 

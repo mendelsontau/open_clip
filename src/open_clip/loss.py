@@ -234,10 +234,8 @@ class ClipLossPlusReconstruction(nn.Module):
         else:
             labels = self.labels[device]
         
-        recon_loss = 0.
 
-        recon_loss = recon_loss + ((pred_z - target_z)**2).mean((1, 2))
-        recon_loss = recon_loss.mean(0)
+        recon_loss = F.mse_loss(target_z, pred_z)
 
         total_loss = (
             F.cross_entropy(logits_per_image, labels) +
