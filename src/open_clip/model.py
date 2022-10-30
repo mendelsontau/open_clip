@@ -343,18 +343,17 @@ class VisualTransformer(nn.Module):
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD
         
-        if camera_pos == None and rays == None:
-            x = self.ln_post(x[:, 0, :])
-            if self.proj is not None:
-                x = x @ self.proj
-        else:
-            x = x[:,1:1 + self.srtencoder.num_tokens,:]
+        x1 = self.ln_post(x[:, 0, :])
+        if self.proj is not None:
+            x1 = x1 @ self.proj
 
-            if self.srtencoder.proj is not None:
-                x = x @ self.srtencoder.proj
+        x2 = x[:,1:1 + self.srtencoder.num_tokens,:]
+
+        if self.srtencoder.proj is not None:
+            x2 = x2 @ self.srtencoder.proj
 
 
-        return x
+        return x1, x2
 
 
 @dataclass
@@ -511,13 +510,13 @@ class CLIP(nn.Module):
             return self.encode_text(text)
         elif text is None:
             return self.encode_image(image, camera_pos, rays)
-        image_features = self.encode_image(image, camera_pos, rays)
+        image_features, z = self.encode_image(image, camera_pos, rays)
         image_features = F.normalize(image_features, dim=-1)
 
         text_features = self.encode_text(text)
         text_features = F.normalize(text_features, dim=-1)
 
-        return image_features, text_features, self.logit_scale.exp()
+        return image_features, z,  text_features, self.logit_scale.exp()
 
 
 def convert_weights_to_fp16(model: nn.Module):

@@ -51,7 +51,7 @@ def unwrap_model(model):
         return model
 
 
-def train_one_epoch(model, teacher_encoder, data, msn_loader, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
+def train_one_epoch(model, teacher_encoder, srtdeocder, data, msn_loader, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
     device = torch.device(args.device)
     autocast = get_autocast(args.precision)
 
@@ -88,6 +88,7 @@ def train_one_epoch(model, teacher_encoder, data, msn_loader, epoch, optimizer, 
 
     loss_m = AverageMeter()
     recon_loss = AverageMeter()
+    clip_recon_loss = AverageMeter()
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
     end = time.time()
@@ -118,12 +119,13 @@ def train_one_epoch(model, teacher_encoder, data, msn_loader, epoch, optimizer, 
             msn_images = msn_images.to(device=device, non_blocking=True)
             input_camera_pos = input_camera_pos.to(device=device, non_blocking=True)
             input_rays = input_rays.to(device=device, non_blocking=True)
-            target_pixels = target_pixels.to(device=device, non_blocking=True)
-            target_camera_pos = target_camera_pos.to(device=device, non_blocking=True)
-            target_rays = target_rays.to(device=device, non_blocking=True)
+            #target_pixels = target_pixels.to(device=device, non_blocking=True)
+            #target_camera_pos = target_camera_pos.to(device=device, non_blocking=True)
+            #target_rays = target_rays.to(device=device, non_blocking=True)
 
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
+        clip_recon_pixels = 10
 
 
         with autocast():
@@ -131,13 +133,38 @@ def train_one_epoch(model, teacher_encoder, data, msn_loader, epoch, optimizer, 
                 z_teacher = teacher_encoder(msn_images, input_camera_pos, input_rays)
                 z_teacher = z_teacher.flatten(1,2)
             msn_images = msn_images.flatten(0,1)
-            image_features, text_features, logit_scale = model(images, texts)
-            if msn == True:
-                z = model(msn_images, None, input_camera_pos, input_rays)
-                z = z.flatten(1,2)
-                total_loss, r_loss = loss(image_features, text_features, z_teacher, z, logit_scale)
-            else:
-                total_loss = loss(image_features, text_features,logit_scale)
+            images = torch.cat([images,msn_images])
+            times = int(args.batch_size/args.msn_batch_size) + 1
+            input_camera_pos = input_camera_pos.repeat(times,1,1)
+            input_rays = input_rays.repeat(times,1,1,1,1)
+            image_features, z, text_features, logit_scale = model(images, texts, input_camera_pos, input_rays)
+            #only clip samples for clip loss
+            image_features = image_features[:args.batch_size]
+
+            #only msn z's for teacher student
+            z_msn = z[-args.msn_batch_size:]
+            z_msn = z_msn.flatten(1,2)
+
+            #clip z's for reconstruction
+            z_clip = z[:args.msn_batch_size]
+
+            first_column = torch.arange(args.msn_batch_size)
+            first_column = first_column.repeat(clip_recon_pixels)
+            first_column = first_column.view(-1,args.msn_batch_size)
+            first_column = first_column.t()
+            first_column = first_column.reshape(-1)
+
+            second_column = torch.randint(0,224*224,(clip_recon_pixels*args.msn_batch_size,))
+            
+            target_pixels = torch.permute(images.flatten(2,3),(0,2,1))[first_column,second_column,:].view(args.msn_batch_size,clip_recon_pixels,3)
+            target_camera_pos = input_camera_pos[:args.msn_batch_size].repeat(1,clip_recon_pixels,1)
+            target_rays = input_rays.flatten(0,1)
+            target_rays = target_rays.flatten(1,2)[first_column,second_column,:].view(args.msn_batch_size,clip_recon_pixels,3)
+
+            pred_pixels, extras = srtdeocder(z_clip,target_camera_pos,target_rays)
+
+
+            total_loss, r_loss, cr_loss = loss(image_features, text_features, z_teacher, z_msn, target_pixels, pred_pixels, logit_scale)
 
         if scaler is not None:
             scaler.scale(total_loss).backward()
@@ -177,11 +204,13 @@ def train_one_epoch(model, teacher_encoder, data, msn_loader, epoch, optimizer, 
             # NOTE loss is coarsely sampled, just master node and per log update
             loss_m.update(total_loss.item(), batch_size)
             recon_loss.update(r_loss.item(),msn_batch_size)
+            clip_recon_loss.update(cr_loss.item(),msn_batch_size*clip_recon_pixels)
             logit_scale_scalar = logit_scale.item()
             logging.info(
                 f"Train Epoch: {epoch} [{num_samples:>{sample_digits}}/{samples_per_epoch} ({percent_complete:.0f}%)] "
                 f"Loss: {loss_m.val:#.5g} ({loss_m.avg:#.4g}) "
                 f"Loss_recon: {recon_loss.val:#.5g} ({recon_loss.avg:#.4g}) "
+                f"Loss_recon_clip: {clip_recon_loss.val:#.5g} ({clip_recon_loss.avg:#.4g}) "
                 f"Data (t): {data_time_m.avg:.3f} "
                 f"Batch (t): {batch_time_m.avg:.3f}, {args.batch_size*args.world_size / batch_time_m.val:#g}/s "
                 f"LR: {optimizer.param_groups[0]['lr']:5f} "
@@ -192,6 +221,7 @@ def train_one_epoch(model, teacher_encoder, data, msn_loader, epoch, optimizer, 
             log_data = {
                 "loss": loss_m.val,
                 "loss_recon": recon_loss.val,
+                "clip_loss_recon": clip_recon_loss.val,
                 "data_time": data_time_m.val,
                 "batch_time": batch_time_m.val,
                 "samples_per_scond": args.batch_size*args.world_size / batch_time_m.val,
