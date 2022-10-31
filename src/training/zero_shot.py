@@ -34,18 +34,23 @@ def accuracy(output, target, topk=(1,)):
 
 def run(model, classifier, dataloader, args):
     autocast = get_autocast(args.precision)
+    input_camera_pos_cpu = torch.load("default_input_camera_pos.pt")
+    input_rays_cpu = torch.load("default_input_rays.pt")
+
     with torch.no_grad():
         top1, top5, n = 0., 0., 0.
         for images, target in tqdm(dataloader, unit_scale=args.batch_size):
             images = images.to(args.device)
             target = target.to(args.device)
+            input_camera_pos = input_camera_pos_cpu.repeat(images.shape[0],1,1).to(args.device)
+            input_rays = input_rays_cpu.repeat(images.shape[0],1,1,1,1).to(args.device)
 
             with autocast():
                 # predict
                 if args.distributed and not args.horovod:
-                    image_features = model.module.encode_image(images)
+                    image_features, _ = model.module.encode_image(images,input_camera_pos, input_rays)
                 else:
-                    image_features = model.encode_image(images)
+                    image_features, _ = model.encode_image(images, input_camera_pos, input_rays)
                 image_features = F.normalize(image_features, dim=-1)
                 logits = 100. * image_features @ classifier
 

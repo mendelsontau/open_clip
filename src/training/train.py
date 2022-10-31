@@ -60,6 +60,7 @@ def train_one_epoch(model, teacher_encoder, srtdeocder, data, msn_loader, epoch,
         msn = True
 
     model.train()
+    srtdeocder.train()
     if msn:
         loss = ClipLossPlusReconstruction(
             local_loss=args.local_loss,
@@ -125,7 +126,7 @@ def train_one_epoch(model, teacher_encoder, srtdeocder, data, msn_loader, epoch,
 
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
-        clip_recon_pixels = 10
+        clip_recon_pixels = 1024
 
 
         with autocast():
@@ -367,7 +368,7 @@ def evaluate_msn(model, SRTdecoder, msn_loader, epoch, args, tb_writer=None):
                 target_rays = target_rays.to(device=device, non_blocking=True)
 
                 with autocast():
-                    z = model(msn_images, None, input_camera_pos, input_rays)
+                    _, z = model(msn_images, None, input_camera_pos, input_rays)
                     pred_pixels, extras = SRTdecoder(z, target_camera_pos, target_rays)
 
 
@@ -468,6 +469,7 @@ def render_image(z, srtdecoder, args, camera_pos, rays):
 
 def visualize(model, srtdecoder, args, data, epoch, mode='val'):
     model.eval()
+    srtdecoder.eval()
     autocast = get_autocast(args.precision)
     inv_trans = transforms.Compose([ transforms.Normalize(mean = [ 0., 0., 0. ],
                                                      std = [ 1/0.26862954, 1/0.26130258, 1/0.27577711 ]),
@@ -499,7 +501,7 @@ def visualize(model, srtdecoder, args, data, epoch, mode='val'):
         input_images_np = np.transpose(inv_trans(input_images).cpu().numpy(), (0, 1, 3, 4, 2))
 
         with autocast():
-            z = model(input_images.flatten(0,1), None,  input_camera_pos, input_rays)
+            _, z = model(input_images.flatten(0,1), None,  input_camera_pos, input_rays)
 
         batch_size, num_input_images, height, width, _ = input_rays.shape
 

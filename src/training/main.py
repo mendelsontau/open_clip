@@ -345,7 +345,7 @@ def main():
         if is_master(args):
             logging.info(f'Start epoch {epoch}')
 
-        train_one_epoch(model, teacher_encoder, data, msn_loader, epoch, optimizer, scaler, scheduler, args, writer)
+        train_one_epoch(model, teacher_encoder, SRTdecoder, data, msn_loader, epoch, optimizer, scaler, scheduler, args, writer)
         completed_epoch = epoch + 1
 
         if any(v in data for v in ('val', 'imagenet-val', 'imagenet-v2')):
