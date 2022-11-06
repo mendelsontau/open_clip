@@ -118,9 +118,9 @@ def train_one_epoch(model, teacher_encoder, data, msn_loader, epoch, optimizer, 
             msn_images = msn_images.to(device=device, non_blocking=True)
             input_camera_pos = input_camera_pos.to(device=device, non_blocking=True)
             input_rays = input_rays.to(device=device, non_blocking=True)
-            target_pixels = target_pixels.to(device=device, non_blocking=True)
-            target_camera_pos = target_camera_pos.to(device=device, non_blocking=True)
-            target_rays = target_rays.to(device=device, non_blocking=True)
+            #target_pixels = target_pixels.to(device=device, non_blocking=True)
+            #target_camera_pos = target_camera_pos.to(device=device, non_blocking=True)
+            #target_rays = target_rays.to(device=device, non_blocking=True)
 
         data_time_m.update(time.time() - end)
         optimizer.zero_grad()
@@ -131,9 +131,11 @@ def train_one_epoch(model, teacher_encoder, data, msn_loader, epoch, optimizer, 
                 z_teacher = teacher_encoder(msn_images, input_camera_pos, input_rays)
                 z_teacher = z_teacher.flatten(1,2)
             msn_images = msn_images.flatten(0,1)
-            image_features, text_features, logit_scale = model(images, texts)
+            images = torch.cat([images,msn_images])
+            image_features, z, text_features, logit_scale = model(images, texts)
+            image_features = image_features[0:args.batch_size]
             if msn == True:
-                z = model(msn_images, None, input_camera_pos, input_rays)
+                z = z[-args.msn_batch_size:]
                 z = z.flatten(1,2)
                 total_loss, r_loss = loss(image_features, text_features, z_teacher, z, logit_scale)
             else:
@@ -242,7 +244,7 @@ def evaluate(model, data, epoch, args, tb_writer=None):
                 texts = texts.to(device=device, non_blocking=True)
 
                 with autocast():
-                    image_features, text_features, logit_scale = model(images, texts)
+                    image_features, _, text_features, logit_scale = model(images, texts)
                     # features are accumulated in CPU tensors, otherwise GPU memory exhausted quickly
                     # however, system RAM is easily exceeded and compute time becomes problematic
                     all_image_features.append(image_features.cpu())
@@ -337,7 +339,7 @@ def evaluate_msn(model, SRTdecoder, msn_loader, epoch, args, tb_writer=None):
                 target_rays = target_rays.to(device=device, non_blocking=True)
 
                 with autocast():
-                    z = model(msn_images, None, input_camera_pos, input_rays)
+                    _, z = model(msn_images, None)
                     pred_pixels, extras = SRTdecoder(z, target_camera_pos, target_rays)
 
 
@@ -469,7 +471,7 @@ def visualize(model, srtdecoder, args, data, epoch, mode='val'):
         input_images_np = np.transpose(inv_trans(input_images).cpu().numpy(), (0, 1, 3, 4, 2))
 
         with autocast():
-            z = model(input_images.flatten(0,1), None,  input_camera_pos, input_rays)
+            _, z = model(input_images.flatten(0,1), None)
 
         batch_size, num_input_images, height, width, _ = input_rays.shape
 
